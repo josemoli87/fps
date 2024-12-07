@@ -1,6 +1,9 @@
 /** @odoo-module **/
 
-import { registry } from "@web/core/registry";
+import { afterEach, beforeEach, describe, expect, test } from "@odoo/hoot";
+import { click, hover, leave, queryFirst, waitFor } from "@odoo/hoot-dom";
+import { advanceTime, animationFrame, runAllTimers } from "@odoo/hoot-mock";
+import { Component, useState, xml } from "@odoo/owl";
 import {
     clearRegistry,
     contains,
@@ -10,16 +13,13 @@ import {
     onRpc,
     patchWithCleanup,
 } from "@web/../tests/web_test_helpers";
-import { afterEach, beforeEach, describe, expect, test } from "@odoo/hoot";
-import { Component, useState, xml } from "@odoo/owl";
-import { advanceTime, animationFrame, runAllTimers } from "@odoo/hoot-mock";
-import { click, queryFirst, waitFor } from "@odoo/hoot-dom";
 import { browser } from "@web/core/browser/browser";
 import { Dialog } from "@web/core/dialog/dialog";
-import { session } from "@web/session";
 import { Macro } from "@web/core/macro";
-import { tourState } from "@web_tour/tour_service/tour_state";
+import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { session } from "@web/session";
+import { tourState } from "@web_tour/tour_service/tour_state";
 
 describe.current.tags("desktop");
 
@@ -228,8 +228,8 @@ test("next step with new anchor at same position", async () => {
     let buttonRect = queryFirst("button.foo").getBoundingClientRect();
     const leftValue1 = pointerRect.left - buttonRect.left;
     const bottomValue1 = pointerRect.bottom - buttonRect.bottom;
-    expect(leftValue1 !== 0).toBe(true);
-    expect(bottomValue1 !== 0).toBe(true);
+    expect(leftValue1).not.toBe(0);
+    expect(bottomValue1).not.toBe(0);
 
     await contains("button.foo").click();
     await animationFrame();
@@ -795,50 +795,22 @@ test("scroller pointer to reach next step", async () => {
 
     await mountWithCleanup(Root);
     await getService("tour_service").startTour("tour_des_flandres", { mode: "manual" });
-    await animationFrame();
-
-    // Even if this seems weird, it should show the initial pointer.
-    // This is due to the fact the intersection observer has just been started and
-    // the pointer did not have the observations yet when the pointTo method was called.
-    // This is a bit tricky to change for now because the synchronism of the pointTo method
-    // is what permits to avoid multiple pointer to be shown at the same time
-    let pointer = queryFirst(".o_tour_pointer");
-    expect(pointer).toHaveCount(1);
-    expect(pointer.textContent).toBe("Click to increment");
-
-    await animationFrame();
-    // now the scroller pointer should be shown
-    expect(pointer).toHaveCount(1);
-    expect(pointer.textContent).toBe("Scroll down to reach the next step.");
-
-    // awaiting the click here permits to the intersection observer to update
-    await contains(".o_tour_pointer").click();
     await advanceTime(1000);
-    await animationFrame();
 
-    pointer = queryFirst(".o_tour_pointer");
-    expect(pointer).toHaveCount(1);
-    expect(pointer.textContent).toBe("Click to increment");
-
-    await contains(".scrollable-parent").scroll({ top: 1000 });
+    await hover(".o_tour_pointer:empty");
+    await click(waitFor(".o_tour_pointer:contains(Scroll down to reach the next step.)"));
+    await leave();
     await advanceTime(1000);
-    await animationFrame();
 
-    pointer = queryFirst(".o_tour_pointer");
-    expect(pointer).toHaveCount(1);
-    expect(pointer.textContent).toBe("Scroll up to reach the next step.");
+    await hover(".o_tour_pointer:empty");
+    await waitFor(".o_tour_pointer:contains(Click to increment)");
 
-    // awaiting the click here permits to the intersection observer to update
-    await contains(".o_tour_pointer").click();
-    await advanceTime(1000);
-    await animationFrame();
-
-    pointer = queryFirst(".o_tour_pointer");
-    expect(pointer).toHaveCount(1);
-    expect(pointer.textContent).toBe("Click to increment");
+    expect(".counter .value").toHaveText("0");
 
     await click("button.inc");
     await animationFrame();
+
+    expect(".counter .value").toHaveText("1");
     expect(".o_tour_pointer").toHaveCount(0);
 });
 
@@ -1536,5 +1508,66 @@ test("a tour where hoot trigger failed", async () => {
     expect.verifySteps([
         `error: FAILED: [2/2] Tour tour_hoot_failed → Step content (trigger: .button1:brol(:machin)).
 SyntaxError: Failed to execute 'querySelectorAll' on 'Element': '.button1:brol(:machin)' is not a valid selector.`,
+    ]);
+});
+
+test("check for undeterminisms", async () => {
+    patchWithCleanup(browser.console, {
+        warn: (s) => {},
+        error: (s) => expect.step(`error: ${s}`),
+        log: (s) => expect.step(`log: ${s}`),
+    });
+    await makeMockEnv();
+
+    class Root extends Component {
+        static components = {};
+        static template = xml/*html*/ `
+            <t>
+                <div class="container">
+                    <button class="button0">Button 0</button>
+                    <button class="button1">Button 1</button>
+                    <button class="button2">Button 2</button>
+                </div>
+            </t>
+        `;
+        static props = ["*"];
+    }
+
+    await mountWithCleanup(Root);
+    registry.category("web_tour.tours").add("tour_und", {
+        steps: () => [
+            {
+                trigger: ".button0",
+                run: "click",
+            },
+            {
+                trigger: ".button1",
+                run: "click",
+            },
+            {
+                trigger: ".button2",
+                run: "click",
+            },
+        ],
+    });
+    await odoo.startTour("tour_und", {
+        mode: "auto",
+        delayToCheckUndeterminisms: 3000,
+    });
+    await advanceTime(10);
+    await advanceTime(500);
+    expect.verifySteps(["log: [1/3] Tour tour_und → Step .button0"]);
+    await advanceTime(3001);
+    await advanceTime(10);
+    await advanceTime(500);
+    expect.verifySteps(["log: [2/3] Tour tour_und → Step .button1"]);
+    await advanceTime(1000);
+    queryFirst(".button1").textContent = "Text has changed :)";
+    await advanceTime(1500);
+    await advanceTime(10000);
+    expect.verifySteps([
+        `error: FAILED: [2/3] Tour tour_und → Step .button1.
+Element has been found.
+UNDETERMINISM: two differents elements have been found in 3000ms for trigger .button1`,
     ]);
 });

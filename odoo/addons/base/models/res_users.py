@@ -1143,13 +1143,16 @@ class Users(models.Model):
 
     @check_identity
     def action_revoke_all_devices(self):
-        return self._action_revoke_all_devices()
+        # self.env.user is sudo by default
+        # Need sudo to bypass access error for removing the devices of portal user
+        return (self.env.user if self.id == self.env.uid else self)._action_revoke_all_devices()
 
     def _action_revoke_all_devices(self):
         devices = self.env["res.device"].search([("user_id", "=", self.id)])
         devices.filtered(lambda d: not d.is_current)._revoke()
         return {'type': 'ir.actions.client', 'tag': 'reload'}
 
+    @api.readonly
     def has_groups(self, group_spec: str) -> bool:
         """ Return whether user ``self`` satisfies the given group restrictions
         ``group_spec``, i.e., whether it is member of at least one of the groups,
@@ -1181,6 +1184,7 @@ class Users(models.Model):
             return True
         return not positives
 
+    @api.readonly
     def has_group(self, group_ext_id: str) -> bool:
         """ Return whether user ``self`` belongs to the given group (given by its
         fully-qualified external ID).
